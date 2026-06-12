@@ -1,37 +1,30 @@
 const express = require('express');
 const router = express.Router();
 const liteLLM = require('../config/litellm.config');
-const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 
-// 🔥 RAG SERVICE (meeting memory)
+const Conversation = require('../models/Conversation');
+const Message = require('../models/Message');
+
+// RAG SERVICE (meeting memory)
 const ragService = require('../services/rag.service');
 
-// In-memory storage
-const conversations = new Map();
-const conversationHistories = new Map();
+
 
 /**
  * =========================
- * CREATE NEW CONVERSATION
+ * CREATE NEW CONVERSATION (MONGODB)
  * =========================
  */
-router.post('/conversations', (req, res) => {
+router.post('/conversations', async (req, res) => {
   try {
     const { title, context } = req.body;
-    const conversationId = uuidv4();
 
-    const conversation = {
-      id: conversationId,
+    const conversation = await Conversation.create({
       title: title || 'New Meeting Conversation',
       context: context || '',
-      createdAt: new Date(),
-      updatedAt: new Date(),
       messageCount: 0
-    };
-
-    conversations.set(conversationId, conversation);
-    conversationHistories.set(conversationId, []);
+    });
 
     res.status(201).json({
       success: true,
@@ -44,9 +37,11 @@ router.post('/conversations', (req, res) => {
   }
 });
 
+
+
 /**
  * =========================
- * SEND MESSAGE (RAG + LLM CORE ENGINE)
+ * SEND MESSAGE (RAG + MONGO + LLM)
  * =========================
  */
 router.post('/conversations/:conversationId/messages', async (req, res) => {
@@ -58,13 +53,13 @@ router.post('/conversations/:conversationId/messages', async (req, res) => {
       return res.status(400).json({ message: 'Message is required' });
     }
 
-    const conversation = conversations.get(conversationId);
+    const conversation = await Conversation.findById(conversationId);
 
     if (!conversation) {
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
-    let history = conversationHistories.get(conversationId) || [];
+
 
     /**
      * =========================
@@ -73,6 +68,8 @@ router.post('/conversations/:conversationId/messages', async (req, res) => {
      */
     const relevantRecordings = ragService.searchRecordings(message);
     const ragContext = ragService.buildContext(relevantRecordings, message);
+
+
 
     /**
      * =========================
@@ -88,54 +85,66 @@ router.post('/conversations/:conversationId/messages', async (req, res) => {
     else if (lowerMessage.includes('email')) mode = 'email';
     else if (lowerMessage.includes('report')) mode = 'report';
 
-    /**
-     * =========================
-     * SYSTEM PROMPT (RAG-ENHANCED)
-     * =========================
-     */
-    const systemMessage = `
-You are a Meeting Intelligence Assistant.
 
-You answer using BOTH:
-1. Conversation history
-2. Meeting recordings context (RAG)
-
-RULES:
-- Always prioritize meeting context if relevant
-- If answer is in recordings, reference it clearly
-- If not found, say "I don't have enough meeting data"
-
-CURRENT MODE: ${mode}
-
-=========================
-MEETING KNOWLEDGE BASE
-=========================
-${ragContext}
-
-=========================
-USER CONTEXT
-=========================
-${conversation.context || 'None'}
-
-=========================
-BEHAVIOR MODES
-=========================
-chat → normal assistant
-summary → meeting summary
-actions → action items extraction
-email → email draft
-report → structured report
-`;
 
     /**
      * =========================
      * SAVE USER MESSAGE
      * =========================
      */
-    history.push({
+    await Message.create({
+      conversationId,
       role: 'user',
       content: message
     });
+
+
+
+    /**
+     * =========================
+     * FETCH RECENT HISTORY
+     * =========================
+     */
+    const history = await Message.find({ conversationId })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+
+    history.reverse();
+
+
+
+    /**
+     * =========================
+     * SYSTEM PROMPT (RAG + CONTEXT)
+     * =========================
+     */
+    const systemMessage = `
+You are a Meeting Intelligence Assistant.
+
+You answer using:
+1. Conversation history
+2. Meeting recordings (RAG context)
+
+RULES:
+- Prioritize meeting data when relevant
+- If found in recordings, reference it
+- If not found, say you lack data
+
+MODE: ${mode}
+
+========================
+MEETING CONTEXT
+========================
+${ragContext}
+
+========================
+USER MEETING CONTEXT
+========================
+${conversation.context || 'None'}
+`;
+
+
 
     /**
      * =========================
@@ -144,8 +153,13 @@ report → structured report
      */
     const messages = [
       { role: 'system', content: systemMessage },
-      ...history.slice(-10)
+      ...history.map(m => ({
+        role: m.role,
+        content: m.content
+      }))
     ];
+
+
 
     /**
      * =========================
@@ -158,27 +172,32 @@ report → structured report
       response?.choices?.[0]?.message?.content ||
       'No response generated';
 
+
+
     /**
      * =========================
      * SAVE ASSISTANT MESSAGE
      * =========================
      */
-    history.push({
+    await Message.create({
+      conversationId,
       role: 'assistant',
       content: assistantMessage
     });
 
-    conversationHistories.set(conversationId, history);
+
 
     /**
      * =========================
-     * UPDATE CONVERSATION META
+     * UPDATE CONVERSATION
      * =========================
      */
-    conversation.messageCount = Math.floor(history.length / 2);
-    conversation.updatedAt = new Date();
+    await Conversation.findByIdAndUpdate(conversationId, {
+      $inc: { messageCount: 1 },
+      updatedAt: new Date()
+    });
 
-    conversations.set(conversationId, conversation);
+
 
     /**
      * =========================
@@ -204,27 +223,31 @@ report → structured report
   }
 });
 
+
+
 /**
  * =========================
  * GET CONVERSATION HISTORY
  * =========================
  */
-router.get('/conversations/:conversationId/messages', (req, res) => {
+router.get('/conversations/:conversationId/messages', async (req, res) => {
   try {
     const { conversationId } = req.params;
 
-    const conversation = conversations.get(conversationId);
+    const conversation = await Conversation.findById(conversationId);
+
     if (!conversation) {
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
-    const history = conversationHistories.get(conversationId) || [];
+    const messages = await Message.find({ conversationId })
+      .sort({ createdAt: 1 });
 
     res.json({
       success: true,
       data: {
         conversation,
-        messages: history
+        messages
       }
     });
 
@@ -234,14 +257,16 @@ router.get('/conversations/:conversationId/messages', (req, res) => {
   }
 });
 
+
+
 /**
  * =========================
  * GET ALL CONVERSATIONS
  * =========================
  */
-router.get('/conversations', (req, res) => {
+router.get('/conversations', async (req, res) => {
   try {
-    const list = Array.from(conversations.values());
+    const list = await Conversation.find().sort({ createdAt: -1 });
 
     res.json({
       success: true,
@@ -255,21 +280,25 @@ router.get('/conversations', (req, res) => {
   }
 });
 
+
+
 /**
  * =========================
  * DELETE CONVERSATION
  * =========================
  */
-router.delete('/conversations/:conversationId', (req, res) => {
+router.delete('/conversations/:conversationId', async (req, res) => {
   try {
     const { conversationId } = req.params;
 
-    if (!conversations.has(conversationId)) {
+    const conversation = await Conversation.findById(conversationId);
+
+    if (!conversation) {
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
-    conversations.delete(conversationId);
-    conversationHistories.delete(conversationId);
+    await Message.deleteMany({ conversationId });
+    await Conversation.findByIdAndDelete(conversationId);
 
     res.json({
       success: true,
