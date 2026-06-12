@@ -1,14 +1,15 @@
-# Meeting Assistant App
 
-A comprehensive application for recording meetings, generating notes, creating reports, and providing AI-powered insights.
+## Quick Start
 
-## Features
+### Prerequisites
+- Node.js 18+
+- npm or yarn
+- Docker (optional)
 
-- 🎥 **Screen Recording** - Capture meeting sessions with high quality
-- 📝 **Meeting Notes** - Auto-generate notes during recordings
-- 📊 **Report Generation** - Create detailed meeting reports
-- 💡 **Smart Suggestions** - AI-powered recommendations based on meeting outcomes
-- ✉️ **Email Drafting** - Auto-generate follow-up emails
-- 🤖 **Integrated Chatbot** - Connected via LiteLLM for meeting insights
+### Backend Setup
 
-## Project Structure
+```bash
+cd backend
+npm install
+cp .env.example .env
+npm run dev
