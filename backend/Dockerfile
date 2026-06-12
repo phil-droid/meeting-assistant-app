@@ -3,7 +3,9 @@ FROM node:20-alpine
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+
+# Clean install for production consistency
+RUN npm install --production --legacy-peer-deps
 
 COPY . .
 
