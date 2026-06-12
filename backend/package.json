@@ -4,9 +4,8 @@
   "description": "Backend API for Meeting Assistant App",
   "main": "src/index.js",
   "scripts": {
-  "dev": "nodemon src/index.js",
-  "start": "node src/index.js"
-}
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js"
   },
   "keywords": [
     "meeting",
