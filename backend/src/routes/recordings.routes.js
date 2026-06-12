@@ -3,8 +3,8 @@ const router = express.Router();
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const logger = require('../utils/logger');
 const { v4: uuidv4 } = require('uuid');
+const logger = require('../utils/logger');
 const aiService = require('../services/ai.service');
 
 /**
@@ -24,7 +24,9 @@ const storage = multer.diskStorage({
   },
 
   filename: (req, file, cb) => {
-    const uniqueName = `recording-${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
+    const uniqueName =
+      `recording-${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
+
     cb(null, uniqueName);
   }
 });
@@ -59,9 +61,8 @@ const recordings = new Map();
 
 /**
  * =========================
- * AI PROCESSING PIPELINE
+ * AI PIPELINE (ASYNC PROCESSOR)
  * =========================
- * (Replace transcription later with Whisper / Deepgram / etc.)
  */
 async function processRecording(recordingId) {
   const recording = recordings.get(recordingId);
@@ -74,33 +75,25 @@ async function processRecording(recordingId) {
     recordings.set(recordingId, recording);
 
     /**
-     * =========================
-     * 1. REAL TRANSCRIPTION LAYER
-     * =========================
+     * 1. TRANSCRIPTION
      */
     const transcript = await aiService.transcribeAudio(recording.filepath);
     recording.transcription = transcript;
 
     /**
-     * =========================
      * 2. SUMMARY
-     * =========================
      */
     const summary = await aiService.summarize(transcript);
     recording.summary = summary;
 
     /**
-     * =========================
      * 3. ACTION ITEMS
-     * =========================
      */
     const actions = await aiService.extractActions(transcript);
     recording.actions = actions;
 
     /**
-     * =========================
-     * 4. FULL REPORT GENERATION
-     * =========================
+     * 4. REPORT GENERATION
      */
     const report = await aiService.generateReport({
       title: recording.title,
@@ -112,39 +105,7 @@ async function processRecording(recordingId) {
     recording.report = report;
 
     /**
-     * =========================
      * FINAL STATE
-     * =========================
-     */
-    recording.status = 'completed';
-    recording.processedAt = new Date();
-
-    recordings.set(recordingId, recording);
-
-    logger.info(`Recording fully processed: ${recordingId}`);
-
-  } catch (error) {
-    logger.error('Processing failed:', error);
-
-    recording.status = 'failed';
-    recording.error = error.message;
-
-    recordings.set(recordingId, recording);
-  }
-}
-    /**
-     * =========================
-     * STEP 3: ACTION EXTRACTION
-     * =========================
-     */
-    const actions = await aiService.extractActions(transcript);
-
-    recording.actions = actions;
-
-    /**
-     * =========================
-     * FINALIZE
-     * =========================
      */
     recording.status = 'completed';
     recording.processedAt = new Date();
@@ -182,7 +143,7 @@ router.post('/upload', upload.single('recording'), (req, res) => {
       meetingId: meetingId || null,
       title: title || req.file.originalname,
       filename: req.file.filename,
-      filepath: `/recordings/${req.file.filename}`,
+      filepath: path.join(process.env.RECORDINGS_DIR || './recordings', req.file.filename),
       size: req.file.size,
       mimetype: req.file.mimetype,
       uploadedAt: new Date(),
@@ -191,14 +152,13 @@ router.post('/upload', upload.single('recording'), (req, res) => {
       status: 'uploaded',
       transcription: null,
       summary: null,
-      actions: null
+      actions: null,
+      report: null
     };
 
     recordings.set(recordingId, recording);
 
-    /**
-     * Trigger async AI pipeline (DO NOT block request)
-     */
+    // async pipeline (non-blocking)
     processRecording(recordingId);
 
     res.status(201).json({
