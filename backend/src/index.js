@@ -1,3 +1,11 @@
+app.get("/", (req, res) => {
+  res.json({
+    app: "Meeting Assistant API",
+    status: "Running",
+    version: "1.0.0"
+  });
+});
+
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -65,6 +73,20 @@ app.use('/api/suggestions', require('./routes/suggestions.routes'));
 app.use('/api/emails', require('./routes/emails.routes'));
 app.use('/api/chatbot', require('./routes/chatbot.routes'));
 app.use('/api/users', require('./routes/users.routes'));
+
+// API Routes
+app.use('/api/auth', require('./routes/auth.routes'));
+app.use('/api/meetings', require('./routes/meetings.routes'));
+app.use('/api/recordings', require('./routes/recordings.routes'));
+app.use('/api/notes', require('./routes/notes.routes'));
+app.use('/api/reports', require('./routes/reports.routes'));
+app.use('/api/suggestions', require('./routes/suggestions.routes'));
+app.use('/api/emails', require('./routes/emails.routes'));
+app.use('/api/chatbot', require('./routes/chatbot.routes'));
+app.use('/api/users', require('./routes/users.routes'));
+
+// Knowledge Base Routes
+app.use('/api/knowledge', require('./routes/knowledge.routes'));
 
 /**
  * =========================
