@@ -165,4 +165,4 @@ router.delete('/conversations/:conversationId', (req, res) => {
   }
 });
 
-module.module = router;
+module.exports = router;
