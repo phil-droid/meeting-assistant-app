@@ -4,10 +4,18 @@ const liteLLM = require('../config/litellm.config');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 
+// 🔥 RAG SERVICE (meeting memory)
+const ragService = require('../services/rag.service');
+
+// In-memory storage
 const conversations = new Map();
 const conversationHistories = new Map();
 
-// Start new conversation
+/**
+ * =========================
+ * CREATE NEW CONVERSATION
+ * =========================
+ */
 router.post('/conversations', (req, res) => {
   try {
     const { title, context } = req.body;
@@ -15,7 +23,7 @@ router.post('/conversations', (req, res) => {
 
     const conversation = {
       id: conversationId,
-      title: title || 'New Conversation',
+      title: title || 'New Meeting Conversation',
       context: context || '',
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -27,16 +35,20 @@ router.post('/conversations', (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Conversation started',
       data: conversation
     });
+
   } catch (error) {
-    logger.error('Start conversation error:', error);
+    logger.error('Create conversation error:', error);
     res.status(500).json({ message: 'Failed to start conversation' });
   }
 });
 
-// Send message and get response
+/**
+ * =========================
+ * SEND MESSAGE (RAG + LLM CORE ENGINE)
+ * =========================
+ */
 router.post('/conversations/:conversationId/messages', async (req, res) => {
   try {
     const { conversationId } = req.params;
@@ -47,34 +59,110 @@ router.post('/conversations/:conversationId/messages', async (req, res) => {
     }
 
     const conversation = conversations.get(conversationId);
+
     if (!conversation) {
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
     let history = conversationHistories.get(conversationId) || [];
 
-    // Build system prompt with context
-    const systemMessage = conversation.context
-      ? `You are an AI assistant helping with meeting insights. Context: ${conversation.context}`
-      : 'You are an AI assistant helping with meeting insights and follow-up actions.';
+    /**
+     * =========================
+     * RAG STEP (MEETING MEMORY)
+     * =========================
+     */
+    const relevantRecordings = ragService.searchRecordings(message);
+    const ragContext = ragService.buildContext(relevantRecordings, message);
 
-    // Add user message to history
+    /**
+     * =========================
+     * MODE DETECTION
+     * =========================
+     */
+    const lowerMessage = message.toLowerCase();
+
+    let mode = 'chat';
+
+    if (lowerMessage.includes('summarize')) mode = 'summary';
+    else if (lowerMessage.includes('action')) mode = 'actions';
+    else if (lowerMessage.includes('email')) mode = 'email';
+    else if (lowerMessage.includes('report')) mode = 'report';
+
+    /**
+     * =========================
+     * SYSTEM PROMPT (RAG-ENHANCED)
+     * =========================
+     */
+    const systemMessage = `
+You are a Meeting Intelligence Assistant.
+
+You answer using BOTH:
+1. Conversation history
+2. Meeting recordings context (RAG)
+
+RULES:
+- Always prioritize meeting context if relevant
+- If answer is in recordings, reference it clearly
+- If not found, say "I don't have enough meeting data"
+
+CURRENT MODE: ${mode}
+
+=========================
+MEETING KNOWLEDGE BASE
+=========================
+${ragContext}
+
+=========================
+USER CONTEXT
+=========================
+${conversation.context || 'None'}
+
+=========================
+BEHAVIOR MODES
+=========================
+chat → normal assistant
+summary → meeting summary
+actions → action items extraction
+email → email draft
+report → structured report
+`;
+
+    /**
+     * =========================
+     * SAVE USER MESSAGE
+     * =========================
+     */
     history.push({
       role: 'user',
       content: message
     });
 
-    // Prepare messages for API
+    /**
+     * =========================
+     * BUILD LLM INPUT
+     * =========================
+     */
     const messages = [
       { role: 'system', content: systemMessage },
-      ...history.slice(-10) // Keep last 10 messages for context
+      ...history.slice(-10)
     ];
 
-    // Get response from LiteLLM
+    /**
+     * =========================
+     * CALL LLM
+     * =========================
+     */
     const response = await liteLLM.chat(messages);
-    const assistantMessage = response.choices[0].message.content;
 
-    // Add assistant response to history
+    const assistantMessage =
+      response?.choices?.[0]?.message?.content ||
+      'No response generated';
+
+    /**
+     * =========================
+     * SAVE ASSISTANT MESSAGE
+     * =========================
+     */
     history.push({
       role: 'assistant',
       content: assistantMessage
@@ -82,32 +170,50 @@ router.post('/conversations/:conversationId/messages', async (req, res) => {
 
     conversationHistories.set(conversationId, history);
 
-    // Update conversation
-    conversation.messageCount = history.length / 2; // Divide by 2 because we store both user and assistant messages
+    /**
+     * =========================
+     * UPDATE CONVERSATION META
+     * =========================
+     */
+    conversation.messageCount = Math.floor(history.length / 2);
     conversation.updatedAt = new Date();
+
     conversations.set(conversationId, conversation);
 
+    /**
+     * =========================
+     * RESPONSE
+     * =========================
+     */
     res.json({
       success: true,
       data: {
         conversationId,
+        mode,
         userMessage: message,
         assistantMessage,
+        usedRAG: relevantRecordings.length > 0,
+        sourcesFound: relevantRecordings.length,
         timestamp: new Date()
       }
     });
+
   } catch (error) {
-    logger.error('Send message error:', error);
+    logger.error('Chat error:', error);
     res.status(500).json({ message: 'Failed to process message' });
   }
 });
 
-// Get conversation history
+/**
+ * =========================
+ * GET CONVERSATION HISTORY
+ * =========================
+ */
 router.get('/conversations/:conversationId/messages', (req, res) => {
   try {
     const { conversationId } = req.params;
-    const conversation = conversations.get(conversationId);
 
+    const conversation = conversations.get(conversationId);
     if (!conversation) {
       return res.status(404).json({ message: 'Conversation not found' });
     }
@@ -121,34 +227,44 @@ router.get('/conversations/:conversationId/messages', (req, res) => {
         messages: history
       }
     });
+
   } catch (error) {
-    logger.error('Get conversation error:', error);
+    logger.error('Fetch conversation error:', error);
     res.status(500).json({ message: 'Failed to fetch conversation' });
   }
 });
 
-// Get all conversations
+/**
+ * =========================
+ * GET ALL CONVERSATIONS
+ * =========================
+ */
 router.get('/conversations', (req, res) => {
   try {
-    const conversationsList = Array.from(conversations.values());
+    const list = Array.from(conversations.values());
+
     res.json({
       success: true,
-      data: conversationsList,
-      count: conversationsList.length
+      count: list.length,
+      data: list
     });
+
   } catch (error) {
-    logger.error('Get conversations error:', error);
+    logger.error('Fetch conversations error:', error);
     res.status(500).json({ message: 'Failed to fetch conversations' });
   }
 });
 
-// Delete conversation
+/**
+ * =========================
+ * DELETE CONVERSATION
+ * =========================
+ */
 router.delete('/conversations/:conversationId', (req, res) => {
   try {
     const { conversationId } = req.params;
-    const conversation = conversations.get(conversationId);
 
-    if (!conversation) {
+    if (!conversations.has(conversationId)) {
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
@@ -157,8 +273,9 @@ router.delete('/conversations/:conversationId', (req, res) => {
 
     res.json({
       success: true,
-      message: 'Conversation deleted successfully'
+      message: 'Conversation deleted'
     });
+
   } catch (error) {
     logger.error('Delete conversation error:', error);
     res.status(500).json({ message: 'Failed to delete conversation' });

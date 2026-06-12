@@ -5,42 +5,173 @@ const path = require('path');
 const fs = require('fs');
 const logger = require('../utils/logger');
 const { v4: uuidv4 } = require('uuid');
+const aiService = require('../services/ai.service');
 
-// Setup multer for video uploads
+/**
+ * =========================
+ * STORAGE CONFIG
+ * =========================
+ */
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const dir = process.env.RECORDINGS_DIR || './recordings';
+
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
+
     cb(null, dir);
   },
+
   filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'recording-' + uniqueSuffix + path.extname(file.originalname));
+    const uniqueName = `recording-${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
+    cb(null, uniqueName);
   }
 });
 
 const upload = multer({
   storage,
-  limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE) || 500000000 },
+  limits: {
+    fileSize: parseInt(process.env.MAX_FILE_SIZE || 500000000)
+  },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['video/mp4', 'video/webm', 'audio/mpeg'];
+    const allowedTypes = [
+      'video/mp4',
+      'video/webm',
+      'audio/mpeg',
+      'audio/mp3'
+    ];
+
     if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only MP4, WebM, and MP3 are allowed.'));
+      cb(new Error('Only MP4, WebM, MP3 files allowed'));
     }
   }
 });
 
+/**
+ * =========================
+ * IN-MEMORY STORAGE
+ * =========================
+ */
 const recordings = new Map();
 
-// Upload recording
+/**
+ * =========================
+ * AI PROCESSING PIPELINE
+ * =========================
+ * (Replace transcription later with Whisper / Deepgram / etc.)
+ */
+async function processRecording(recordingId) {
+  const recording = recordings.get(recordingId);
+  if (!recording) return;
+
+  try {
+    logger.info(`Processing recording: ${recordingId}`);
+
+    recording.status = 'processing';
+    recordings.set(recordingId, recording);
+
+    /**
+     * =========================
+     * 1. REAL TRANSCRIPTION LAYER
+     * =========================
+     */
+    const transcript = await aiService.transcribeAudio(recording.filepath);
+    recording.transcription = transcript;
+
+    /**
+     * =========================
+     * 2. SUMMARY
+     * =========================
+     */
+    const summary = await aiService.summarize(transcript);
+    recording.summary = summary;
+
+    /**
+     * =========================
+     * 3. ACTION ITEMS
+     * =========================
+     */
+    const actions = await aiService.extractActions(transcript);
+    recording.actions = actions;
+
+    /**
+     * =========================
+     * 4. FULL REPORT GENERATION
+     * =========================
+     */
+    const report = await aiService.generateReport({
+      title: recording.title,
+      transcript,
+      summary,
+      actions
+    });
+
+    recording.report = report;
+
+    /**
+     * =========================
+     * FINAL STATE
+     * =========================
+     */
+    recording.status = 'completed';
+    recording.processedAt = new Date();
+
+    recordings.set(recordingId, recording);
+
+    logger.info(`Recording fully processed: ${recordingId}`);
+
+  } catch (error) {
+    logger.error('Processing failed:', error);
+
+    recording.status = 'failed';
+    recording.error = error.message;
+
+    recordings.set(recordingId, recording);
+  }
+}
+    /**
+     * =========================
+     * STEP 3: ACTION EXTRACTION
+     * =========================
+     */
+    const actions = await aiService.extractActions(transcript);
+
+    recording.actions = actions;
+
+    /**
+     * =========================
+     * FINALIZE
+     * =========================
+     */
+    recording.status = 'completed';
+    recording.processedAt = new Date();
+
+    recordings.set(recordingId, recording);
+
+    logger.info(`Recording processed successfully: ${recordingId}`);
+
+  } catch (error) {
+    logger.error('Recording processing failed:', error);
+
+    recording.status = 'failed';
+    recording.error = error.message;
+
+    recordings.set(recordingId, recording);
+  }
+}
+
+/**
+ * =========================
+ * UPLOAD RECORDING
+ * =========================
+ */
 router.post('/upload', upload.single('recording'), (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ message: 'No file uploaded' });
+      return res.status(400).json({ message: 'No recording uploaded' });
     }
 
     const recordingId = uuidv4();
@@ -48,84 +179,114 @@ router.post('/upload', upload.single('recording'), (req, res) => {
 
     const recording = {
       id: recordingId,
-      meetingId,
+      meetingId: meetingId || null,
       title: title || req.file.originalname,
       filename: req.file.filename,
       filepath: `/recordings/${req.file.filename}`,
       size: req.file.size,
-      duration: null,
+      mimetype: req.file.mimetype,
       uploadedAt: new Date(),
+
+      // AI fields
+      status: 'uploaded',
       transcription: null,
-      status: 'processing'
+      summary: null,
+      actions: null
     };
 
     recordings.set(recordingId, recording);
+
+    /**
+     * Trigger async AI pipeline (DO NOT block request)
+     */
+    processRecording(recordingId);
 
     res.status(201).json({
       success: true,
       message: 'Recording uploaded successfully',
       data: recording
     });
+
   } catch (error) {
-    logger.error('Recording upload error:', error);
+    logger.error('Upload error:', error);
     res.status(500).json({ message: 'Failed to upload recording' });
   }
 });
 
-// Get all recordings
+/**
+ * =========================
+ * GET ALL RECORDINGS
+ * =========================
+ */
 router.get('/', (req, res) => {
   try {
-    const recordingsList = Array.from(recordings.values());
+    const list = Array.from(recordings.values());
+
     res.json({
       success: true,
-      data: recordingsList,
-      count: recordingsList.length
+      count: list.length,
+      data: list
     });
+
   } catch (error) {
-    logger.error('Get recordings error:', error);
+    logger.error('Fetch recordings error:', error);
     res.status(500).json({ message: 'Failed to fetch recordings' });
   }
 });
 
-// Get specific recording
+/**
+ * =========================
+ * GET SINGLE RECORDING
+ * =========================
+ */
 router.get('/:recordingId', (req, res) => {
   try {
-    const { recordingId } = req.params;
-    const recording = recordings.get(recordingId);
+    const recording = recordings.get(req.params.recordingId);
 
     if (!recording) {
       return res.status(404).json({ message: 'Recording not found' });
     }
 
-    res.json({ success: true, data: recording });
+    res.json({
+      success: true,
+      data: recording
+    });
+
   } catch (error) {
     logger.error('Get recording error:', error);
     res.status(500).json({ message: 'Failed to fetch recording' });
   }
 });
 
-// Delete recording
+/**
+ * =========================
+ * DELETE RECORDING
+ * =========================
+ */
 router.delete('/:recordingId', (req, res) => {
   try {
-    const { recordingId } = req.params;
-    const recording = recordings.get(recordingId);
+    const recording = recordings.get(req.params.recordingId);
 
     if (!recording) {
       return res.status(404).json({ message: 'Recording not found' });
     }
 
-    // Delete file from storage
-    const filepath = path.join(process.env.RECORDINGS_DIR || './recordings', recording.filename);
-    if (fs.existsSync(filepath)) {
-      fs.unlinkSync(filepath);
+    const filePath = path.join(
+      process.env.RECORDINGS_DIR || './recordings',
+      recording.filename
+    );
+
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
     }
 
-    recordings.delete(recordingId);
+    recordings.delete(req.params.recordingId);
 
     res.json({
       success: true,
       message: 'Recording deleted successfully'
     });
+
   } catch (error) {
     logger.error('Delete recording error:', error);
     res.status(500).json({ message: 'Failed to delete recording' });
@@ -133,3 +294,4 @@ router.delete('/:recordingId', (req, res) => {
 });
 
 module.exports = router;
+module.exports.recordings = recordings;
