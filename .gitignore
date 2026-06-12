@@ -1,52 +1,11 @@
-# Node modules
-node_modules/
-
-# Environment variables
+.env.example
+backend/uploads/
+backend/recordings/
+backend/logs/
+frontend/.env.example
+frontend/dist/
+frontend/node_modules/
 .env
-.env.local
 .env.*.local
-
-# Build outputs
-dist/
-build/
-.next/
-out/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Logs
-logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Database
-*.db
-*.sqlite
-*.sqlite3
-
-# Recordings and media
-recordings/
-*.mp4
-*.webm
-*.wav
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-venv/
-ENV/
-env/
-
-# Package manager
-package-lock.json
-yarn.lock
-pip.lock
+.DS_Store
