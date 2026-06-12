@@ -12,6 +12,11 @@ function ChatBot() {
   const [showNewConversation, setShowNewConversation] = useState(false);
   const [conversationTitle, setConversationTitle] = useState('');
 
+  /**
+   * =========================
+   * LOAD CONVERSATIONS
+   * =========================
+   */
   useEffect(() => {
     fetchConversations();
   }, []);
@@ -25,225 +30,274 @@ function ChatBot() {
     }
   };
 
+  /**
+   * =========================
+   * CREATE NEW CONVERSATION
+   * =========================
+   */
   const handleNewConversation = async () => {
     if (!conversationTitle.trim()) {
       toast.error('Please enter a title');
       return;
     }
+
     try {
       const response = await chatbotService.startConversation({
         title: conversationTitle,
         context: 'Meeting assistance'
       });
+
       const newConversation = response.data.data;
-      setConversations([...conversations, newConversation]);
+
+      setConversations(prev => [newConversation, ...prev]);
       setCurrentConversation(newConversation);
       setMessages([]);
       setConversationTitle('');
       setShowNewConversation(false);
+
       toast.success('Conversation started');
     } catch (error) {
       toast.error('Failed to start conversation');
     }
   };
 
+  /**
+   * =========================
+   * LOAD HISTORY
+   * =========================
+   */
   const loadConversation = async (conversation) => {
     try {
       setCurrentConversation(conversation);
-      const response = await chatbotService.getHistory(conversation.id);
+
+      const response = await chatbotService.getHistory(conversation._id);
       setMessages(response.data.data.messages || []);
     } catch (error) {
       toast.error('Failed to load conversation');
     }
   };
 
+  /**
+   * =========================
+   * SEND MESSAGE (OPTIMIZED)
+   * =========================
+   */
   const handleSendMessage = async (e) => {
     e.preventDefault();
+
     if (!inputMessage.trim() || !currentConversation) return;
 
-    const userMessage = { role: 'user', content: inputMessage };
-    setMessages([...messages, userMessage]);
+    const messageToSend = inputMessage;
     setInputMessage('');
     setLoading(true);
 
+    // optimistic UI (user message)
+    setMessages(prev => [
+      ...prev,
+      { role: 'user', content: messageToSend }
+    ]);
+
     try {
-      const response = await chatbotService.sendMessage(currentConversation.id, inputMessage);
+      const response = await chatbotService.sendMessage(
+        currentConversation._id,
+        messageToSend
+      );
+
       const assistantMessage = {
         role: 'assistant',
         content: response.data.data.assistantMessage
       };
+
       setMessages(prev => [...prev, assistantMessage]);
+
     } catch (error) {
       toast.error('Failed to send message');
+
+      // rollback last user message
       setMessages(prev => prev.slice(0, -1));
     } finally {
       setLoading(false);
     }
   };
 
+  /**
+   * =========================
+   * DELETE CONVERSATION
+   * =========================
+   */
   const handleDeleteConversation = async (id) => {
-    if (window.confirm('Are you sure?')) {
-      try {
-        await chatbotService.deleteConversation(id);
-        if (currentConversation?.id === id) {
-          setCurrentConversation(null);
-          setMessages([]);
-        }
-        setConversations(conversations.filter(c => c.id !== id));
-        toast.success('Conversation deleted');
-      } catch (error) {
-        toast.error('Failed to delete conversation');
+    if (!window.confirm('Are you sure you want to delete this conversation?')) return;
+
+    try {
+      await chatbotService.deleteConversation(id);
+
+      setConversations(prev => prev.filter(c => c._id !== id));
+
+      if (currentConversation?._id === id) {
+        setCurrentConversation(null);
+        setMessages([]);
       }
+
+      toast.success('Conversation deleted');
+    } catch (error) {
+      toast.error('Failed to delete conversation');
     }
   };
 
+  /**
+   * =========================
+   * UI
+   * =========================
+   */
   return (
     <div className="flex h-full">
-      {/* Sidebar */}
+
+      {/* SIDEBAR */}
       <div className="w-64 bg-white border-r border-gray-200 flex flex-col">
+
         <div className="p-4 border-b">
           <button
             onClick={() => setShowNewConversation(true)}
-            className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-lg transition-colors"
+            className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-lg"
           >
             <PlusIcon className="h-5 w-5" />
             New Chat
           </button>
         </div>
+
         <div className="flex-1 overflow-y-auto">
-          {conversations.map(conversation => (
+          {conversations.map((c) => (
             <div
-              key={conversation.id}
-              onClick={() => loadConversation(conversation)}
-              className={`p-4 border-b cursor-pointer hover:bg-gray-50 transition-colors ${
-                currentConversation?.id === conversation.id ? 'bg-blue-50' : ''
+              key={c._id}
+              onClick={() => loadConversation(c)}
+              className={`p-4 border-b cursor-pointer hover:bg-gray-50 ${
+                currentConversation?._id === c._id ? 'bg-blue-50' : ''
               }`}
             >
-              <div className="flex justify-between items-start gap-2">
-                <h3 className="font-semibold text-gray-900 text-sm truncate flex-1">
-                  {conversation.title}
+              <div className="flex justify-between">
+                <h3 className="text-sm font-semibold truncate">
+                  {c.title}
                 </h3>
+
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    handleDeleteConversation(conversation.id);
+                    handleDeleteConversation(c._id);
                   }}
-                  className="text-red-600 hover:text-red-700 flex-shrink-0"
+                  className="text-red-600"
                 >
                   <TrashIcon className="h-4 w-4" />
                 </button>
               </div>
-              <p className="text-xs text-gray-500 mt-1">{conversation.messageCount} messages</p>
+
+              <p className="text-xs text-gray-500 mt-1">
+                {c.messageCount || 0} messages
+              </p>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Chat Area */}
+      {/* CHAT AREA */}
       <div className="flex-1 flex flex-col bg-white">
+
         {currentConversation ? (
           <>
-            {/* Messages */}
+            {/* MESSAGES */}
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
+
               {messages.length === 0 ? (
-                <div className="flex items-center justify-center h-full text-gray-500">
-                  <div className="text-center">
-                    <p className="text-lg font-semibold mb-2">Start the conversation</p>
-                    <p className="text-sm">Ask me about your meeting insights, action items, or anything else!</p>
-                  </div>
+                <div className="text-center text-gray-500 mt-20">
+                  Start your meeting assistant chat
                 </div>
               ) : (
-                messages.map((message, index) => (
+                messages.map((m, i) => (
                   <div
-                    key={index}
-                    className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    key={i}
+                    className={`flex ${
+                      m.role === 'user' ? 'justify-end' : 'justify-start'
+                    }`}
                   >
                     <div
-                      className={`max-w-xs lg:max-w-md p-4 rounded-lg ${
-                        message.role === 'user'
+                      className={`p-3 rounded-lg max-w-md ${
+                        m.role === 'user'
                           ? 'bg-blue-600 text-white'
-                          : 'bg-gray-100 text-gray-900'
+                          : 'bg-gray-100 text-black'
                       }`}
                     >
-                      <p className="text-sm">{message.content}</p>
+                      {m.content}
                     </div>
                   </div>
                 ))
               )}
+
               {loading && (
-                <div className="flex justify-start">
-                  <div className="bg-gray-100 p-4 rounded-lg">
-                    <div className="flex gap-2">
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.4s'}}></div>
-                    </div>
-                  </div>
+                <div className="text-gray-400 text-sm">
+                  AI is thinking...
                 </div>
               )}
             </div>
 
-            {/* Input */}
-            <div className="border-t border-gray-200 p-4">
-              <form onSubmit={handleSendMessage} className="flex gap-2">
-                <input
-                  type="text"
-                  value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  placeholder="Type your message..."
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  disabled={loading}
-                />
-                <button
-                  type="submit"
-                  disabled={loading || !inputMessage.trim()}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-bold py-2 px-4 rounded-lg transition-colors"
-                >
-                  <PaperAirplaneIcon className="h-5 w-5" />
-                </button>
-              </form>
-            </div>
+            {/* INPUT */}
+            <form onSubmit={handleSendMessage} className="p-4 border-t flex gap-2">
+              <input
+                value={inputMessage}
+                onChange={(e) => setInputMessage(e.target.value)}
+                className="flex-1 border p-2 rounded-lg"
+                placeholder="Ask about your meeting..."
+              />
+
+              <button
+                disabled={loading}
+                className="bg-blue-600 text-white px-4 rounded-lg"
+              >
+                <PaperAirplaneIcon className="h-5 w-5" />
+              </button>
+            </form>
           </>
         ) : (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center text-gray-500">
-              <p className="text-lg font-semibold mb-2">No conversation selected</p>
-              <p className="text-sm">Start a new chat or select an existing one</p>
-            </div>
+          <div className="flex items-center justify-center h-full text-gray-500">
+            Select or create a conversation
           </div>
         )}
       </div>
 
-      {/* New Conversation Modal */}
+      {/* MODAL */}
       {showNewConversation && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
-            <h2 className="text-2xl font-bold text-gray-900 mb-4">New Conversation</h2>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center">
+          <div className="bg-white p-6 rounded-lg w-96">
+
+            <h2 className="text-lg font-bold mb-3">
+              New Conversation
+            </h2>
+
             <input
-              type="text"
               value={conversationTitle}
               onChange={(e) => setConversationTitle(e.target.value)}
-              placeholder="Conversation title (e.g., Team Meeting Q4)"
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 mb-4"
-              autoFocus
+              className="w-full border p-2 rounded-lg mb-4"
+              placeholder="Enter title"
             />
+
             <div className="flex gap-2">
               <button
                 onClick={handleNewConversation}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-lg"
+                className="flex-1 bg-blue-600 text-white py-2 rounded-lg"
               >
-                Start Chat
+                Create
               </button>
+
               <button
                 onClick={() => setShowNewConversation(false)}
-                className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-900 font-bold py-2 rounded-lg"
+                className="flex-1 bg-gray-300 py-2 rounded-lg"
               >
                 Cancel
               </button>
             </div>
+
           </div>
         </div>
       )}
+
     </div>
   );
 }
