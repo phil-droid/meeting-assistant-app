@@ -11,6 +11,8 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import MeetingDetail from './pages/MeetingDetail';
 import './index.css';
+import { useEffect } from 'react';
+import api from './api/client';
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('token'));
@@ -21,6 +23,19 @@ function App() {
     localStorage.removeItem('user');
     setIsAuthenticated(false);
   };
+
+  useEffect(() => {
+  const testBackend = async () => {
+    try {
+      const res = await api.get('/health');
+      console.log('Backend connected:', res.data);
+    } catch (err) {
+      console.error('Backend connection failed:', err.message);
+    }
+  };
+
+  testBackend();
+}, []);
 
   if (!isAuthenticated) {
     return (
