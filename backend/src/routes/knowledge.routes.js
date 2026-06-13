@@ -1,194 +1,213 @@
 const express = require("express");
 const router = express.Router();
-
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-
 const { v4: uuidv4 } = require("uuid");
 
-const KnowledgeFile = require("../models/KnowledgeFile");
-const KnowledgeChunk = require("../models/KnowledgeChunk");
+const logger = require("../utils/logger");
+const { extractText } = require("../utils/extractText");
+const embeddingService = require("../services/embedding.service");
 
-const knowledgeService = require("../services/knowledge.service");
-const chunkerService = require("../services/chunker.service");
+/**
+ * ===========================================
+ * MONGOOSE MODEL
+ * ===========================================
+ */
+const Knowledge = require("../models/Knowledge");
 
+/**
+ * ===========================================
+ * FILE STORAGE CONFIG
+ * ===========================================
+ */
 const storage = multer.diskStorage({
-
-  destination(req, file, cb) {
-
+  destination: (req, file, cb) => {
     const dir = "./uploads/knowledge";
 
     if (!fs.existsSync(dir)) {
-
       fs.mkdirSync(dir, { recursive: true });
-
     }
 
     cb(null, dir);
-
   },
 
-  filename(req, file, cb) {
+  filename: (req, file, cb) => {
+    const uniqueName =
+      Date.now() +
+      "-" +
+      Math.round(Math.random() * 1e9) +
+      path.extname(file.originalname);
 
-    cb(
-
-      null,
-
-      uuidv4() + path.extname(file.originalname)
-
-    );
-
+    cb(null, uniqueName);
   }
-
 });
 
-const upload = multer({
+const upload = multer({ storage });
 
-  storage
+/**
+ * ===========================================
+ * TEXT CHUNKING FUNCTION
+ * ===========================================
+ */
+function chunkText(text, chunkSize = 800, overlap = 150) {
+  const chunks = [];
 
-});
+  let i = 0;
 
-router.post(
-
-  "/upload",
-
-  upload.single("file"),
-
-  async (req, res) => {
-
-    try {
-
-      if (!req.file) {
-
-        return res.status(400).json({
-
-          message: "No file uploaded"
-
-        });
-
-      }
-
-      const extractedText = await knowledgeService.extractText(
-
-        req.file.path,
-
-        req.file.mimetype
-
-      );
-
-      const chunks = chunkerService.chunkText(
-
-        extractedText
-
-      );
-
-      const knowledgeFile = await KnowledgeFile.create({
-
-        filename: req.file.filename,
-
-        originalName: req.file.originalname,
-
-        mimeType: req.file.mimetype,
-
-        size: req.file.size,
-
-        status: "completed",
-
-        totalChunks: chunks.length
-
-      });
-
-      for (let i = 0; i < chunks.length; i++) {
-
-        await KnowledgeChunk.create({
-
-          fileId: knowledgeFile._id,
-
-          chunkIndex: i,
-
-          text: chunks[i],
-
-          embedding: []
-
-        });
-
-      }
-
-      res.json({
-
-        success: true,
-
-        file: knowledgeFile,
-
-        chunks: chunks.length
-
-      });
-
-    }
-
-    catch (err) {
-
-      console.error(err);
-
-      res.status(500).json({
-
-        message: err.message
-
-      });
-
-    }
-
+  while (i < text.length) {
+    const chunk = text.slice(i, i + chunkSize);
+    chunks.push(chunk);
+    i += chunkSize - overlap;
   }
 
-);
+  return chunks;
+}
 
-router.get(
-
-  "/",
-
-  async (req, res) => {
-
-    const files = await KnowledgeFile.find()
-
-      .sort({
-
-        createdAt: -1
-
+/**
+ * ===========================================
+ * UPLOAD + PROCESS KNOWLEDGE FILE
+ * ===========================================
+ */
+router.post("/upload", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        message: "No file uploaded"
       });
+    }
 
-    res.json(files);
+    const filePath = req.file.path;
+    const mimeType = req.file.mimetype;
 
-  }
+    /**
+     * STEP 1: Extract raw text
+     */
+    const text = await extractText(filePath, mimeType);
 
-);
+    if (!text || text.trim().length === 0) {
+      return res.status(400).json({
+        message: "Could not extract text from file"
+      });
+    }
 
-router.delete(
+    /**
+     * STEP 2: Chunk text
+     */
+    const chunks = chunkText(text);
 
-  "/:id",
+    /**
+     * STEP 3: Generate embeddings for each chunk
+     */
+    const embeddedChunks = [];
 
-  async (req, res) => {
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkTextValue = chunks[i];
 
-    await KnowledgeChunk.deleteMany({
+      const embedding =
+        await embeddingService.createEmbedding(
+          chunkTextValue
+        );
 
-      fileId: req.params.id
+      embeddedChunks.push({
+        chunkIndex: i,
+        text: chunkTextValue,
+        embedding
+      });
+    }
 
+    /**
+     * STEP 4: Save to MongoDB
+     */
+    const knowledgeDoc = new Knowledge({
+      id: uuidv4(),
+      filename: req.file.originalname,
+      filePath,
+      mimeType,
+      rawText: text,
+      chunks: embeddedChunks,
+      createdAt: new Date()
     });
 
-    await KnowledgeFile.findByIdAndDelete(
+    await knowledgeDoc.save();
 
-      req.params.id
+    res.status(201).json({
+      success: true,
+      message: "Knowledge uploaded and processed",
+      data: {
+        id: knowledgeDoc.id,
+        filename: knowledgeDoc.filename,
+        chunks: chunks.length
+      }
+    });
+  } catch (error) {
+    logger.error("Knowledge upload error:", error);
 
-    );
+    res.status(500).json({
+      message: "Failed to process knowledge file"
+    });
+  }
+});
+
+/**
+ * ===========================================
+ * GET ALL KNOWLEDGE FILES
+ * ===========================================
+ */
+router.get("/", async (req, res) => {
+  try {
+    const docs = await Knowledge.find().sort({
+      createdAt: -1
+    });
 
     res.json({
+      success: true,
+      count: docs.length,
+      data: docs
+    });
+  } catch (error) {
+    logger.error("Fetch knowledge error:", error);
 
-      success: true
+    res.status(500).json({
+      message: "Failed to fetch knowledge base"
+    });
+  }
+});
 
+/**
+ * ===========================================
+ * DELETE KNOWLEDGE FILE
+ * ===========================================
+ */
+router.delete("/:id", async (req, res) => {
+  try {
+    const doc = await Knowledge.findOne({
+      id: req.params.id
     });
 
-  }
+    if (!doc) {
+      return res.status(404).json({
+        message: "Knowledge not found"
+      });
+    }
 
-);
+    if (fs.existsSync(doc.filePath)) {
+      fs.unlinkSync(doc.filePath);
+    }
+
+    await Knowledge.deleteOne({ id: req.params.id });
+
+    res.json({
+      success: true,
+      message: "Knowledge deleted"
+    });
+  } catch (error) {
+    logger.error("Delete knowledge error:", error);
+
+    res.status(500).json({
+      message: "Failed to delete knowledge"
+    });
+  }
+});
 
 module.exports = router;
