@@ -11,7 +11,7 @@ const logger = require("../utils/logger");
 
 const {
   searchKnowledge,
-} = require("../services/rag.service");
+} = require("../services/rag.services");
 
 /*
 ====================================

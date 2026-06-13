@@ -1,68 +1,52 @@
 const Knowledge = require("../models/Knowledge");
-const embeddingService = require("./embedding.service");
+const { createEmbedding, rankChunks } = require("./embedding.service");
+const logger = require("../utils/logger");
+
+const TOP_K = parseInt(process.env.RAG_TOP_K || "5");
+const MIN_SIMILARITY = parseFloat(process.env.RAG_MIN_SIMILARITY || "0.3");
 
 /**
- * Cosine similarity
+ * Search knowledge base for relevant chunks
  */
-function cosineSimilarity(a, b) {
-  let dot = 0;
-  let magA = 0;
-  let magB = 0;
+async function searchKnowledge(query) {
+  try {
+    // 1. Embed the query
+    const queryEmbedding = await createEmbedding(query);
 
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    magA += a[i] * a[i];
-    magB += b[i] * b[i];
-  }
-
-  magA = Math.sqrt(magA);
-  magB = Math.sqrt(magB);
-
-  if (magA === 0 || magB === 0) {
-    return 0;
-  }
-
-  return dot / (magA * magB);
-}
-
-/**
- * Retrieve top matching chunks
- */
-async function searchKnowledge(query, topK = 5) {
-  const queryEmbedding =
-    await embeddingService.createEmbedding(query);
-
-  const docs = await Knowledge.find();
-
-  const results = [];
-
-  for (const doc of docs) {
-    for (const chunk of doc.chunks) {
-      if (
-        !chunk.embedding ||
-        chunk.embedding.length === 0
-      ) {
-        continue;
-      }
-
-      const score = cosineSimilarity(
-        queryEmbedding,
-        chunk.embedding
-      );
-
-      results.push({
-        score,
-        filename: doc.filename,
-        text: chunk.text
-      });
+    if (!queryEmbedding || queryEmbedding.length === 0) {
+      logger.warn("Could not generate query embedding — returning empty results");
+      return [];
     }
+
+    // 2. Load all knowledge docs
+    const docs = await Knowledge.find({});
+
+    if (docs.length === 0) return [];
+
+    // 3. Flatten all chunks across all docs
+    const allChunks = [];
+    for (const doc of docs) {
+      for (const chunk of doc.chunks) {
+        allChunks.push({
+          filename: doc.filename,
+          text:     chunk.text,
+          embedding: chunk.embedding
+        });
+      }
+    }
+
+    // 4. Rank by cosine similarity
+    const ranked = rankChunks(queryEmbedding, allChunks);
+
+    // 5. Return top K above threshold
+    return ranked
+      .filter(c => c.similarity >= MIN_SIMILARITY)
+      .slice(0, TOP_K);
+
+  } catch (err) {
+    logger.error("RAG search error:", err);
+    return [];
   }
-
-  results.sort((a, b) => b.score - a.score);
-
-  return results.slice(0, topK);
 }
 
-module.exports = {
-  searchKnowledge
-};
+module.exports = { searchKnowledge };

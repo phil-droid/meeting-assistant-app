@@ -1,37 +1,29 @@
-const axios = require('axios');
+const axios = require("axios");
+const logger = require("../utils/logger");
 
-class LiteLLMClient {
-  constructor() {
-    this.apiKey = process.env.LITELLM_API_KEY;
-    this.apiBase = process.env.LITELLM_API_BASE || 'https://api.litellm.ai/v1';
-    this.model = process.env.LLM_MODEL || 'gpt-3.5-turbo';
-    this.client = axios.create({
-      baseURL: this.apiBase,
-      headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json'
-      }
-    });
-  }
+const BASE_URL = process.env.LITELLM_API_BASE || "http://localhost:4000";
+const API_KEY  = process.env.LITELLM_API_KEY  || "anything";
+const MODEL    = process.env.LLM_MODEL        || "gpt-3.5-turbo";
 
-  async chat(messages, options = {}) {
+const liteLLM = {
+  async chat(messages) {
     try {
-      const response = await this.client.post('/chat/completions', {
-        model: options.model || this.model,
-        messages,
-        temperature: options.temperature || 0.7,
-        max_tokens: options.max_tokens || 2000,
-        ...options
-      });
+      const response = await axios.post(
+        `${BASE_URL}/chat/completions`,
+        { model: MODEL, messages },
+        {
+          headers: {
+            Authorization: `Bearer ${API_KEY}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
       return response.data;
-    } catch (error) {
-      throw new Error(`LiteLLM API Error: ${error.message}`);
+    } catch (err) {
+      logger.error("LiteLLM chat error:", err.response?.data || err.message);
+      throw new Error(`LiteLLM request failed: ${err.message}`);
     }
   }
+};
 
-  async generateText(prompt, options = {}) {
-    return this.chat([{ role: 'user', content: prompt }], options);
-  }
-}
-
-module.exports = new LiteLLMClient();
+module.exports = liteLLM;
